@@ -1,0 +1,15 @@
+{
+  "name": "claude-zotero",
+  "owner": { "name": "ekunish" },
+  "metadata": { "description": "Zotero integration plugin for Claude Code" },
+  "plugins": [
+    {
+      "name": "zotero",
+      "source": "./",
+      "description": "Search, import, and manage academic references via Zotero's local and REST APIs",
+      "version": "1.0.0",
+      "category": "research",
+      "tags": ["zotero", "academic", "references", "bibliography", "doi", "bibtex"]
+    }
+  ]
+}
