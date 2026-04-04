@@ -106,6 +106,28 @@ curl -s -H "Zotero-API-Key: $ZOTERO_API_KEY" \
 
 **Important:** Always clean up temp files after reading: `rm -f /tmp/zotero_paper.pdf`
 
+### Add a note to an item
+Use this to attach summaries, annotations, or memos to papers. Notes support HTML formatting.
+```bash
+WRITE_TOKEN=$(openssl rand -hex 16)
+curl -s -X POST "https://api.zotero.org/users/$ZOTERO_USER_ID/items" \
+  -H "Zotero-API-Key: $ZOTERO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Zotero-Write-Token: $WRITE_TOKEN" \
+  -d '[{
+    "itemType": "note",
+    "parentItem": "<parentItemKey>",
+    "note": "<h1>Title</h1><p>Content in HTML</p>",
+    "tags": [{"tag": "AI-generated-summary"}]
+  }]'
+```
+
+When the user asks to summarize a paper and save it:
+1. Search for the item and get its key
+2. Download and read the PDF (see above)
+3. Generate a detailed summary
+4. Add the summary as a child note with the `AI-generated-summary` tag
+
 ### Export BibTeX
 ```bash
 # Single item
