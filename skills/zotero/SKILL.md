@@ -85,6 +85,27 @@ curl -s "http://localhost:23119/api/users/0/collections?format=json" | \
   python3 -c "import sys,json; [print(f'{c[\"data\"][\"key\"]}: {c[\"data\"][\"name\"]}') for c in json.load(sys.stdin)]"
 ```
 
+### Read PDF content of a paper
+```bash
+# 1. Find PDF attachment for an item (get child items)
+curl -s -H "Zotero-API-Key: $ZOTERO_API_KEY" \
+  "https://api.zotero.org/users/$ZOTERO_USER_ID/items/<parentItemKey>/children?format=json" | \
+  python3 -c "import sys,json; [print(f'{i[\"data\"][\"key\"]}: {i[\"data\"].get(\"filename\",\"\")}') for i in json.load(sys.stdin) if i['data'].get('contentType')=='application/pdf']"
+
+# 2. Download and extract text
+curl -sL -H "Zotero-API-Key: $ZOTERO_API_KEY" \
+  "https://api.zotero.org/users/$ZOTERO_USER_ID/items/<attachmentKey>/file" \
+  -o /tmp/zotero_paper.pdf && pdftotext /tmp/zotero_paper.pdf -
+```
+
+Alternatively, search for PDF attachments directly:
+```bash
+curl -s -H "Zotero-API-Key: $ZOTERO_API_KEY" \
+  "https://api.zotero.org/users/$ZOTERO_USER_ID/items?itemType=attachment&q=<query>&format=json&limit=5"
+```
+
+**Important:** Always clean up temp files after reading: `rm -f /tmp/zotero_paper.pdf`
+
 ### Export BibTeX
 ```bash
 # Single item
