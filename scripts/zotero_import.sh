@@ -5,7 +5,9 @@
 #   zotero_import.sh --dois "10.1038/xxx,10.2196/yyy"
 #   zotero_import.sh --file dois.txt
 #   zotero_import.sh --bibtex references.bib
-#   zotero_import.sh --dois "10.1038/xxx" --collection "My Collection"
+#
+# DOI formats accepted: 10.xxx/yyy, doi:10.xxx/yyy, https://doi.org/10.xxx/yyy
+# Items are imported into whichever collection is currently selected in Zotero.
 
 set -euo pipefail
 
@@ -54,23 +56,58 @@ import_bibtex() {
     fi
 }
 
+# Normalize DOI: strip prefixes, URLs, and whitespace
+normalize_doi() {
+    local doi="$1"
+    doi=$(echo "$doi" | xargs)  # trim whitespace
+    doi=${doi#doi:}             # strip doi: prefix
+    doi=${doi#DOI:}             # strip DOI: prefix
+    doi=${doi#https://doi.org/} # strip URL prefix
+    doi=${doi#http://doi.org/}
+    doi=${doi#https://dx.doi.org/}
+    doi=${doi#http://dx.doi.org/}
+    echo "$doi"
+}
+
+# Validate BibTeX response (doi.org/CrossRef return leading whitespace)
+is_valid_bibtex() {
+    local text="$1"
+    local trimmed
+    trimmed=$(echo "$text" | sed 's/^[[:space:]]*//')
+    [[ "$trimmed" == @* ]]
+}
+
 # Resolve DOI to BibTeX
 resolve_doi() {
-    local doi="$1"
-    local bibtex
+    local doi
+    doi=$(normalize_doi "$1")
+    local bibtex http_code tmpfile
+    tmpfile=$(mktemp)
+    trap 'rm -f "$tmpfile"' RETURN
+
     # Try doi.org content negotiation
-    bibtex=$(curl -sL -H "Accept: application/x-bibtex" "https://doi.org/$doi" 2>/dev/null)
-    if [[ "$bibtex" == @* ]]; then
-        echo "$bibtex"
-        return 0
+    http_code=$(curl -sL -o "$tmpfile" -w "%{http_code}" \
+        -H "Accept: application/x-bibtex" "https://doi.org/$doi" 2>/dev/null)
+    if [[ "$http_code" == "200" ]]; then
+        bibtex=$(cat "$tmpfile")
+        if is_valid_bibtex "$bibtex"; then
+            echo "$bibtex"
+            return 0
+        fi
     fi
+
     # Fallback: try CrossRef
-    local crossref
-    crossref=$(curl -s "https://api.crossref.org/works/$doi/transform/application/x-bibtex" 2>/dev/null)
-    if [[ "$crossref" == @* ]]; then
-        echo "$crossref"
-        return 0
+    http_code=$(curl -sL -o "$tmpfile" -w "%{http_code}" \
+        "https://api.crossref.org/works/$doi/transform/application/x-bibtex" 2>/dev/null)
+    if [[ "$http_code" == "200" ]]; then
+        bibtex=$(cat "$tmpfile")
+        if is_valid_bibtex "$bibtex"; then
+            echo "$bibtex"
+            return 0
+        fi
     fi
+
+    echo "DOI resolution failed: doi=$doi, last HTTP status=$http_code" >&2
     return 1
 }
 
@@ -116,18 +153,23 @@ success=0
 fail=0
 for doi in "${doi_list[@]}"; do
     doi=$(echo "$doi" | xargs)  # trim
+    [[ -z "$doi" ]] && continue
     echo -n "Importing $doi... "
-    bibtex=$(resolve_doi "$doi" 2>/dev/null) || true
+    resolve_err=$(mktemp)
+    bibtex=$(resolve_doi "$doi" 2>"$resolve_err") || true
     if [[ -z "$bibtex" ]]; then
-        echo "FAILED (DOI resolution)"
+        err_detail=$(cat "$resolve_err")
+        echo "FAILED (DOI resolution: ${err_detail:-unknown error})"
+        rm -f "$resolve_err"
         ((fail++))
         continue
     fi
+    rm -f "$resolve_err"
     if import_bibtex "$bibtex"; then
         echo "OK"
         ((success++))
     else
-        echo "FAILED (Zotero import)"
+        echo "FAILED (Zotero rejected the import — is Zotero running?)"
         ((fail++))
     fi
     sleep 0.5  # Rate limiting
