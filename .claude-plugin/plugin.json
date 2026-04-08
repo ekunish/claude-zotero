@@ -1,7 +1,7 @@
 {
   "name": "zotero",
   "description": "Zotero integration for Claude Code - search, import, and manage academic references via Zotero's local and REST APIs",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": {
     "name": "ekunish"
   },

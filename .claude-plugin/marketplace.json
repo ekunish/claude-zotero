@@ -7,7 +7,7 @@
       "name": "zotero",
       "source": "./",
       "description": "Search, import, and manage academic references via Zotero's local and REST APIs",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "category": "research",
       "tags": ["zotero", "academic", "references", "bibliography", "doi", "bibtex"]
     }
