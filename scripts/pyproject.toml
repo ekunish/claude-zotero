@@ -1,7 +1,7 @@
 [project]
-name = "scripts"
+name = "claude-zotero-scripts"
 version = "0.1.0"
-description = "Add your description here"
+description = "Helper scripts for claude-zotero plugin"
 requires-python = ">=3.12"
 dependencies = [
     "anthropic>=0.89.0",

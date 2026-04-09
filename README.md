@@ -48,7 +48,13 @@ Once installed, Claude Code will automatically detect Zotero-related requests:
 ## Requirements
 
 - Zotero 7+ (with local API enabled)
-- `curl`, `python3` (for JSON parsing)
+- [`uv`](https://docs.astral.sh/uv/getting-started/installation/) — Python package manager (manages dependencies automatically)
+- `curl` — for DOI resolution and local Zotero connector
+- Python 3.12+ (managed by `uv`)
+
+### Optional (for abstract translation)
+
+- `ANTHROPIC_API_KEY` — for translating abstracts to Japanese via Claude API
 
 ## License
 

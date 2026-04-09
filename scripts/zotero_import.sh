@@ -7,13 +7,15 @@
 #   zotero_import.sh --bibtex references.bib
 #
 # DOI formats accepted: 10.xxx/yyy, doi:10.xxx/yyy, https://doi.org/10.xxx/yyy
-# Items are imported into whichever collection is currently selected in Zotero.
+# Local connector: items go into the currently selected collection in Zotero.
+# REST API: items go into "My Library" (unfiled).
 
 set -euo pipefail
 
 ZOTERO_URL="http://localhost:23119"
 SESSION_ID="import-$(date +%s)-$(openssl rand -hex 4)"
-COLLECTION=""
+TMPDIR_WORK=$(mktemp -d)
+trap 'rm -rf "$TMPDIR_WORK"' EXIT
 DOIS=""
 DOI_FILE=""
 BIBTEX_FILE=""
@@ -21,45 +23,62 @@ BIBTEX_FILE=""
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dois)      DOIS="$2"; shift 2 ;;
-        --file)      DOI_FILE="$2"; shift 2 ;;
-        --bibtex)    BIBTEX_FILE="$2"; shift 2 ;;
-        --collection) COLLECTION="$2"; shift 2 ;;
+        --dois)   [[ $# -ge 2 ]] || { echo "Error: $1 requires an argument"; exit 1; }; DOIS="$2"; shift 2 ;;
+        --file)   [[ $# -ge 2 ]] || { echo "Error: $1 requires an argument"; exit 1; }; DOI_FILE="$2"; shift 2 ;;
+        --bibtex) [[ $# -ge 2 ]] || { echo "Error: $1 requires an argument"; exit 1; }; BIBTEX_FILE="$2"; shift 2 ;;
         -h|--help)
-            echo "Usage: $0 [--dois DOI1,DOI2] [--file dois.txt] [--bibtex refs.bib] [--collection name]"
+            echo "Usage: $0 [--dois DOI1,DOI2] [--file dois.txt] [--bibtex refs.bib]"
             exit 0 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
 
-# Check Zotero is running
-if ! curl -sf "$ZOTERO_URL/connector/ping" > /dev/null 2>&1; then
-    echo "Error: Zotero is not running or local API is disabled."
-    echo "Please start Zotero and enable: Settings > Advanced > Allow other applications to communicate with Zotero"
+# Check Zotero is running; fall back to REST API if not
+USE_REST_API=false
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if curl -sf "$ZOTERO_URL/connector/ping" > /dev/null 2>&1; then
+    echo "Zotero is running (local connector)."
+elif [[ -n "${ZOTERO_API_KEY:-}" && -n "${ZOTERO_USER_ID:-}" ]]; then
+    echo "Zotero not running locally. Using REST API."
+    USE_REST_API=true
+else
+    echo "Error: Zotero is not running and REST API credentials (ZOTERO_API_KEY, ZOTERO_USER_ID) are not set."
+    echo "Either start Zotero or set ZOTERO_API_KEY and ZOTERO_USER_ID environment variables."
     exit 1
 fi
-echo "Zotero is running."
 
-# Import BibTeX directly
-import_bibtex() {
+# Import BibTeX via local connector
+import_bibtex_local() {
     local bibtex="$1"
     local status
-    status=$(curl -s -o /dev/null -w "%{http_code}" \
+    status=$(printf '%s' "$bibtex" | curl -s -o /dev/null -w "%{http_code}" \
         -X POST "$ZOTERO_URL/connector/import" \
         -H "Content-Type: application/x-bibtex" \
         -H "X-Zotero-Session-ID: $SESSION_ID" \
-        -d "$bibtex")
-    if [[ "$status" == "201" ]]; then
-        return 0
+        --data-binary @-)
+    [[ "$status" == "201" ]]
+}
+
+# Import BibTeX via REST API (converts to Zotero JSON internally)
+import_bibtex_rest() {
+    local bibtex="$1"
+    echo "$bibtex" | uv run --project "$SCRIPT_DIR" python3 "$SCRIPT_DIR/zotero_rest_import.py"
+}
+
+# Import BibTeX using available method
+import_bibtex() {
+    if [[ "$USE_REST_API" == "true" ]]; then
+        import_bibtex_rest "$1"
     else
-        return 1
+        import_bibtex_local "$1"
     fi
 }
 
 # Normalize DOI: strip prefixes, URLs, and whitespace
 normalize_doi() {
     local doi="$1"
-    doi=$(echo "$doi" | xargs)  # trim whitespace
+    doi=$(echo "$doi" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')  # trim whitespace
     doi=${doi#doi:}             # strip doi: prefix
     doi=${doi#DOI:}             # strip DOI: prefix
     doi=${doi#https://doi.org/} # strip URL prefix
@@ -78,16 +97,22 @@ is_valid_bibtex() {
 }
 
 # Resolve DOI to BibTeX
+# URL-encode a DOI for safe use in HTTP requests
+urlencode_doi() {
+    uv run --project "$SCRIPT_DIR" python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+}
+
 resolve_doi() {
     local doi
     doi=$(normalize_doi "$1")
-    local bibtex http_code tmpfile
-    tmpfile=$(mktemp)
-    trap 'rm -f "$tmpfile"' RETURN
+    local encoded_doi
+    encoded_doi=$(urlencode_doi "$doi")
+    local bibtex http_code
+    local tmpfile="$TMPDIR_WORK/resolve_doi.tmp"
 
     # Try doi.org content negotiation
     http_code=$(curl -sL -o "$tmpfile" -w "%{http_code}" \
-        -H "Accept: application/x-bibtex" "https://doi.org/$doi" 2>/dev/null)
+        -H "Accept: application/x-bibtex" "https://doi.org/$encoded_doi" 2>/dev/null)
     if [[ "$http_code" == "200" ]]; then
         bibtex=$(cat "$tmpfile")
         if is_valid_bibtex "$bibtex"; then
@@ -98,7 +123,7 @@ resolve_doi() {
 
     # Fallback: try CrossRef
     http_code=$(curl -sL -o "$tmpfile" -w "%{http_code}" \
-        "https://api.crossref.org/works/$doi/transform/application/x-bibtex" 2>/dev/null)
+        "https://api.crossref.org/works/$encoded_doi/transform/application/x-bibtex" 2>/dev/null)
     if [[ "$http_code" == "200" ]]; then
         bibtex=$(cat "$tmpfile")
         if is_valid_bibtex "$bibtex"; then
@@ -138,7 +163,7 @@ if [[ -n "$DOI_FILE" ]]; then
         exit 1
     fi
     while IFS= read -r line; do
-        line=$(echo "$line" | xargs)  # trim whitespace
+        line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')  # trim whitespace
         [[ -n "$line" && "$line" != \#* ]] && doi_list+=("$line")
     done < "$DOI_FILE"
 fi
@@ -152,25 +177,23 @@ fi
 success=0
 fail=0
 for doi in "${doi_list[@]}"; do
-    doi=$(echo "$doi" | xargs)  # trim
+    doi=$(echo "$doi" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')  # trim
     [[ -z "$doi" ]] && continue
     echo -n "Importing $doi... "
-    resolve_err=$(mktemp)
+    resolve_err="$TMPDIR_WORK/resolve_err.tmp"
     bibtex=$(resolve_doi "$doi" 2>"$resolve_err") || true
     if [[ -z "$bibtex" ]]; then
-        err_detail=$(cat "$resolve_err")
+        err_detail=$(cat "$resolve_err" 2>/dev/null)
         echo "FAILED (DOI resolution: ${err_detail:-unknown error})"
-        rm -f "$resolve_err"
-        ((fail++))
+        fail=$((fail + 1))
         continue
     fi
-    rm -f "$resolve_err"
     if import_bibtex "$bibtex"; then
         echo "OK"
-        ((success++))
+        success=$((success + 1))
     else
-        echo "FAILED (Zotero rejected the import — is Zotero running?)"
-        ((fail++))
+        echo "FAILED (import rejected)"
+        fail=$((fail + 1))
     fi
     sleep 0.5  # Rate limiting
 done

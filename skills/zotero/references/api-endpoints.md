@@ -112,7 +112,7 @@ curl -X POST "https://api.zotero.org/users/$ZOTERO_USER_ID/items" \
   -H "Zotero-API-Key: $ZOTERO_API_KEY" \
   -H "Content-Type: application/json" \
   -H "Zotero-Write-Token: $(uuidgen)" \
-  -d '[{"itemType":"journalArticle","title":"...","creators":[{"creatorType":"author","firstName":"...","lastName":"..."}]}]'
+  -d '[{"itemType":"journalArticle","title":"...","DOI":"10.xxxx/xxxxx","url":"https://doi.org/10.xxxx/xxxxx","creators":[{"creatorType":"author","firstName":"...","lastName":"..."}]}]'
 ```
 
 **Update item:**

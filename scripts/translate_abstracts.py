@@ -1,128 +1,140 @@
 #!/usr/bin/env python3
-"""Fetch abstracts for all papers in a Zotero collection, translate to Japanese, and add as notes."""
+"""Fetch abstracts for all papers in a Zotero collection, translate them, and add as notes.
 
-import json
+Target language is configurable via ZOTERO_TRANSLATE_LANG (default: Japanese).
+"""
+
+import html
 import os
-import subprocess
+import re
+import sys
 import time
-import uuid
 import urllib.parse
 import anthropic
 
-API_KEY = os.environ["ZOTERO_API_KEY"]
-USER_ID = os.environ["ZOTERO_USER_ID"]
-BASE = f"https://api.zotero.org/users/{USER_ID}"
-COLLECTION_KEY = os.environ.get("ZOTERO_COLLECTION_KEY", "Y3U7B48A")
+from zotero_api import api_get, api_post, http_get_json, is_error
 
-client = anthropic.Anthropic()
+COLLECTION_KEY = os.environ.get("ZOTERO_COLLECTION_KEY", "")
+TRANSLATE_MODEL = os.environ.get("ZOTERO_TRANSLATE_MODEL", "claude-haiku-4-5-20251001")
+TRANSLATE_LANG = os.environ.get("ZOTERO_TRANSLATE_LANG", "Japanese")
 
-
-def api_get(path):
-    r = subprocess.run(
-        ["curl", "-s", "-H", f"Zotero-API-Key: {API_KEY}", f"{BASE}{path}"],
-        capture_output=True, text=True,
-    )
-    try:
-        return json.loads(r.stdout) if r.stdout.strip() else None
-    except json.JSONDecodeError:
-        return None
-
-
-def api_post(path, data):
-    token = uuid.uuid4().hex[:32]
-    r = subprocess.run(
-        ["curl", "-s", "-X", "POST", f"{BASE}{path}",
-         "-H", f"Zotero-API-Key: {API_KEY}",
-         "-H", "Content-Type: application/json",
-         "-H", f"Zotero-Write-Token: {token}",
-         "-d", json.dumps(data)],
-        capture_output=True, text=True,
-    )
-    try:
-        return json.loads(r.stdout) if r.stdout.strip() else None
-    except json.JSONDecodeError:
-        return None
+# Tag applied to translation notes, derived from language (e.g. "abstract-ja", "abstract-zh")
+_LANG_TAG_MAP = {
+    "Japanese": "abstract-ja",
+    "Chinese": "abstract-zh",
+    "Korean": "abstract-ko",
+    "French": "abstract-fr",
+    "German": "abstract-de",
+    "Spanish": "abstract-es",
+}
+TRANSLATE_TAG = _LANG_TAG_MAP.get(TRANSLATE_LANG, f"abstract-{TRANSLATE_LANG[:2].lower()}")
 
 
 def fetch_abstract_crossref(doi):
     """Fetch abstract from CrossRef by DOI."""
     if not doi:
         return None
-    r = subprocess.run(
-        ["curl", "-s", f"https://api.crossref.org/works/{doi}"],
-        capture_output=True, text=True, timeout=15,
-    )
-    try:
-        data = json.loads(r.stdout).get("message", {})
-        abstract = data.get("abstract", "")
-        # Strip JATS XML tags
-        for tag in ["<jats:p>", "</jats:p>", "<jats:italic>", "</jats:italic>",
-                     "<jats:bold>", "</jats:bold>", "<jats:sup>", "</jats:sup>",
-                     "<jats:sub>", "</jats:sub>", "<jats:title>", "</jats:title>",
-                     "<jats:sec>", "</jats:sec>"]:
-            abstract = abstract.replace(tag, "")
-        return abstract.strip() if abstract.strip() else None
-    except Exception:
+    data = http_get_json(f"https://api.crossref.org/works/{urllib.parse.quote(doi, safe='')}")
+    if not data:
         return None
+    abstract = data.get("message", {}).get("abstract", "")
+    abstract = re.sub(r"</?jats:[^>]*/?>", "", abstract)
+    return abstract.strip() or None
 
 
 def fetch_abstract_semantic_scholar(title):
     """Fetch abstract from Semantic Scholar by title."""
     q = urllib.parse.quote(title[:200])
-    r = subprocess.run(
-        ["curl", "-s", f"https://api.semanticscholar.org/graph/v1/paper/search?query={q}&limit=1&fields=abstract"],
-        capture_output=True, text=True, timeout=15,
+    data = http_get_json(
+        f"https://api.semanticscholar.org/graph/v1/paper/search?query={q}&limit=1&fields=abstract"
     )
-    try:
-        data = json.loads(r.stdout)
-        papers = data.get("data", [])
-        if papers and papers[0].get("abstract"):
-            return papers[0]["abstract"]
-    except Exception:
-        pass
+    if not data:
+        return None
+    papers = data.get("data", [])
+    if papers and papers[0].get("abstract"):
+        return papers[0]["abstract"]
     return None
 
 
-def translate_to_japanese(text, title):
-    """Translate abstract to Japanese using Claude API."""
+def translate_abstract(text, title):
+    """Translate abstract to the configured language using Claude API."""
+    client = anthropic.Anthropic()
     resp = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=TRANSLATE_MODEL,
         max_tokens=2000,
         messages=[{
             "role": "user",
-            "content": f"以下の論文のアブストラクトを日本語に翻訳してください。翻訳のみを出力し、余計な説明は不要です。\n\n論文タイトル: {title}\n\nAbstract:\n{text}",
+            "content": (
+                f"Translate the following paper abstract into {TRANSLATE_LANG}. "
+                f"Output only the translation, no explanations.\n\n"
+                f"Paper title: {title}\n\nAbstract:\n{text}"
+            ),
         }],
     )
+    if not resp.content:
+        return "(translation failed: empty response)"
     return resp.content[0].text
 
 
 def get_existing_notes(item_key):
-    """Check if item already has an abstract translation note."""
+    """Check if item already has a translation note (by tag)."""
     children = api_get(f"/items/{item_key}/children?format=json")
-    if not children:
+    if not children or is_error(children):
         return []
     return [c for c in children if c["data"]["itemType"] == "note"
-            and "アブストラクト" in c["data"].get("note", "")]
+            and any(t.get("tag") == TRANSLATE_TAG for t in c["data"].get("tags", []))]
 
 
-def add_note(parent_key, note_html):
+def add_note(parent_key, note_html) -> bool:
+    """Add a note to an item. Returns True on success."""
     data = [{
         "itemType": "note",
         "parentItem": parent_key,
         "note": note_html,
-        "tags": [{"tag": "abstract-ja"}],
+        "tags": [{"tag": TRANSLATE_TAG}],
     }]
-    api_post("/items", data)
+    result = api_post("/items", data)
+    if is_error(result) or result is None:
+        return False
+    if isinstance(result, dict) and result.get("failed"):
+        return False
+    return True
+
+
+def _get_all_subcollection_keys(root_key):
+    """Recursively collect all subcollection keys under root_key."""
+    from collections import deque
+
+    # Paginate to fetch all collections
+    all_colls = []
+    start = 0
+    while True:
+        page = api_get(f"/collections?format=json&limit=100&start={start}")
+        if is_error(page) or not page:
+            break
+        all_colls.extend(page)
+        start += 100
+
+    if not all_colls:
+        return [root_key]
+
+    keys = [root_key]
+    seen = {root_key}
+    queue = deque([root_key])
+    while queue:
+        parent = queue.popleft()
+        for c in all_colls:
+            child_key = c["data"]["key"]
+            if c["data"].get("parentCollection") == parent and child_key not in seen:
+                keys.append(child_key)
+                seen.add(child_key)
+                queue.append(child_key)
+    return keys
 
 
 def get_all_papers():
-    """Get all papers in the collection and subcollections."""
-    colls = api_get("/collections?format=json&limit=100")
-    sub_keys = [COLLECTION_KEY]
-    if colls:
-        for c in colls:
-            if c["data"].get("parentCollection") == COLLECTION_KEY:
-                sub_keys.append(c["data"]["key"])
+    """Get all papers in the collection and all subcollections (recursive)."""
+    sub_keys = _get_all_subcollection_keys(COLLECTION_KEY)
 
     all_items = []
     seen = set()
@@ -130,6 +142,9 @@ def get_all_papers():
         start = 0
         while True:
             items = api_get(f"/collections/{ck}/items?format=json&limit=100&start={start}")
+            if is_error(items):
+                print(f"  Warning: API error fetching items from collection {ck}, skipping", file=sys.stderr)
+                break
             if not items:
                 break
             for item in items:
@@ -142,6 +157,11 @@ def get_all_papers():
 
 
 def main():
+    if not COLLECTION_KEY:
+        print("Error: ZOTERO_COLLECTION_KEY environment variable is not set.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Translating abstracts to {TRANSLATE_LANG} (tag: {TRANSLATE_TAG})")
     papers = get_all_papers()
     print(f"Total papers: {len(papers)}")
 
@@ -160,13 +180,13 @@ def main():
         # Check if already has translation note
         existing = get_existing_notes(key)
         if existing:
-            print(f"  -> SKIP (already has translation)")
+            print("  -> SKIP (already has translation)")
             skipped += 1
             continue
 
         # Fetch abstract if missing
         if not abstract:
-            print(f"  -> Fetching abstract from CrossRef...", end=" ")
+            print("  -> Fetching abstract from CrossRef...", end=" ")
             abstract = fetch_abstract_crossref(doi)
             if not abstract:
                 print("trying Semantic Scholar...", end=" ")
@@ -175,13 +195,14 @@ def main():
                 print("OK")
             else:
                 print("NOT FOUND")
-                no_abstract.append(f"{paper.get('creators', [{}])[0].get('lastName', '?')} ({paper.get('date', '?')}): {title}")
+                creators = paper.get("creators") or [{}]
+                no_abstract.append(f"{creators[0].get('lastName', '?')} ({paper.get('date', '?')}): {title}")
                 continue
 
         # Translate
-        print(f"  -> Translating...", end=" ")
+        print("  -> Translating...", end=" ")
         try:
-            translation = translate_to_japanese(abstract, title)
+            translation = translate_abstract(abstract, title)
             print("OK")
         except Exception as e:
             print(f"FAILED ({e})")
@@ -189,21 +210,23 @@ def main():
 
         # Add note
         note_html = (
-            f"<h2>アブストラクト（日本語訳）</h2>"
-            f"<p>{translation}</p>"
+            f"<h2>Abstract ({TRANSLATE_LANG})</h2>"
+            f"<p>{html.escape(translation)}</p>"
             f"<hr/>"
             f"<h2>Original Abstract</h2>"
-            f"<p>{abstract}</p>"
+            f"<p>{html.escape(abstract)}</p>"
         )
-        add_note(key, note_html)
-        success += 1
-        print(f"  -> Note added")
+        if add_note(key, note_html):
+            success += 1
+            print("  -> Note added")
+        else:
+            print("  -> FAILED (note creation failed)")
         time.sleep(0.3)
 
     print(f"\n{'='*60}")
     print(f"DONE: {success} translated, {skipped} skipped, {len(no_abstract)} no abstract")
     if no_abstract:
-        print(f"\nNo abstract found:")
+        print("\nNo abstract found:")
         for p in no_abstract:
             print(f"  - {p}")
 
