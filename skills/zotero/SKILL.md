@@ -78,7 +78,16 @@ Options:
 - `--file path/to/dois.txt` — File with one DOI per line
 - `--bibtex path/to/refs.bib` — Import BibTeX file directly
 
-**Automatic PDF attachment (REST API path):** If `UNPAYWALL_EMAIL` is set, the script automatically queries [Unpaywall](https://unpaywall.org/) for open-access PDFs and attaches them to imported items. This only applies to the REST API path — the local Zotero connector handles PDF retrieval via Zotero's built-in settings.
+**Automatic PDF attachment (REST API path):** After importing, the script tries to find and attach open-access PDFs:
+1. **arXiv DOIs** (`10.48550/arXiv.*`) — resolved directly to `arxiv.org/pdf/{id}.pdf` (no API call)
+2. **Other DOIs** — queried via [Unpaywall](https://unpaywall.org/) (requires `UNPAYWALL_EMAIL` env var)
+This only applies to the REST API path — the local Zotero connector handles PDF retrieval via Zotero's built-in settings.
+
+You can also attach a PDF to an existing item directly:
+```bash
+uv run --project "${CLAUDE_PLUGIN_ROOT}/scripts" python3 "${CLAUDE_PLUGIN_ROOT}/scripts/pdf_attach.py" --item-key KEY --pdf-url "https://arxiv.org/pdf/1706.03762.pdf"
+uv run --project "${CLAUDE_PLUGIN_ROOT}/scripts" python3 "${CLAUDE_PLUGIN_ROOT}/scripts/pdf_attach.py" --item-key KEY --doi "10.48550/arXiv.1706.03762"
+```
 
 ### List collections
 ```bash

@@ -179,13 +179,12 @@ def main():
         doi = item.get("DOI", "N/A")
         print(f"Imported: {item['title'][:60]} (DOI: {doi})")
 
-    # Attempt PDF attachment if UNPAYWALL_EMAIL is set
-    if os.environ.get("UNPAYWALL_EMAIL"):
-        from pdf_attach import attach_pdf
-        for idx, item_key in created.items():
-            doi = items[int(idx)].get("DOI", "")
-            if doi:
-                attach_pdf(item_key, doi)
+    # Attempt PDF attachment (arXiv works without UNPAYWALL_EMAIL)
+    from pdf_attach import attach_pdf
+    for idx, item_key in created.items():
+        doi = items[int(idx)].get("DOI", "")
+        if doi:
+            attach_pdf(item_key, doi)
 
 
 if __name__ == "__main__":

@@ -394,16 +394,16 @@ class TestGetAllSubcollectionKeys(unittest.TestCase):
 
 class TestRestImportMain(unittest.TestCase):
 
-    @patch("zotero_rest_import.api_post_items")
-    def test_main_with_valid_bibtex(self, mock_post):
+    @patch("pdf_attach.attach_pdf")
+    @patch("zotero_rest_import.api_post")
+    def test_main_with_valid_bibtex(self, mock_post, mock_attach):
         from zotero_rest_import import main
-        mock_post.return_value = True
+        mock_post.return_value = {"successful": {"0": {"key": "ABC123"}}, "failed": {}}
         with patch("sys.stdin", io.StringIO('@article{test, title = {Test Paper}, doi = {10.1/x}}')):
-            main()  # should not raise
+            main()
         mock_post.assert_called_once()
 
-    @patch("zotero_rest_import.api_post_items")
-    def test_main_empty_stdin(self, mock_post):
+    def test_main_empty_stdin(self):
         from zotero_rest_import import main
         with patch("sys.stdin", io.StringIO("")):
             with self.assertRaises(SystemExit) as ctx:
@@ -436,6 +436,73 @@ class TestHttpGetJson(unittest.TestCase):
         mock_resp.__exit__ = MagicMock(return_value=False)
         with patch("urllib.request.urlopen", return_value=mock_resp):
             self.assertIsNone(http_get_json("http://test"))
+
+
+class TestPdfResolve(unittest.TestCase):
+
+    def test_arxiv_doi(self):
+        from pdf_attach import find_arxiv_pdf_url
+        self.assertEqual(
+            find_arxiv_pdf_url("10.48550/arXiv.1706.03762"),
+            "https://arxiv.org/pdf/1706.03762.pdf",
+        )
+
+    def test_arxiv_doi_lowercase(self):
+        from pdf_attach import find_arxiv_pdf_url
+        self.assertEqual(
+            find_arxiv_pdf_url("10.48550/arxiv.1706.03762"),
+            "https://arxiv.org/pdf/1706.03762.pdf",
+        )
+
+    def test_non_arxiv_doi(self):
+        from pdf_attach import find_arxiv_pdf_url
+        self.assertIsNone(find_arxiv_pdf_url("10.1038/nature14539"))
+
+    @patch("pdf_attach.http_get_json")
+    def test_unpaywall_best_location(self, mock_get):
+        from pdf_attach import find_unpaywall_pdf_url
+        mock_get.return_value = {
+            "is_oa": True,
+            "best_oa_location": {"url_for_pdf": "https://example.com/paper.pdf"},
+            "oa_locations": [],
+        }
+        with patch("pdf_attach.UNPAYWALL_EMAIL", "test@example.com"):
+            self.assertEqual(find_unpaywall_pdf_url("10.1/x"), "https://example.com/paper.pdf")
+
+    @patch("pdf_attach.http_get_json")
+    def test_unpaywall_fallback_location(self, mock_get):
+        from pdf_attach import find_unpaywall_pdf_url
+        mock_get.return_value = {
+            "is_oa": True,
+            "best_oa_location": {"url_for_pdf": None},
+            "oa_locations": [
+                {"url_for_pdf": None},
+                {"url_for_pdf": "https://repo.com/paper.pdf"},
+            ],
+        }
+        with patch("pdf_attach.UNPAYWALL_EMAIL", "test@example.com"):
+            self.assertEqual(find_unpaywall_pdf_url("10.1/x"), "https://repo.com/paper.pdf")
+
+    @patch("pdf_attach.http_get_json")
+    def test_unpaywall_not_oa(self, mock_get):
+        from pdf_attach import find_unpaywall_pdf_url
+        mock_get.return_value = {"is_oa": False}
+        with patch("pdf_attach.UNPAYWALL_EMAIL", "test@example.com"):
+            self.assertIsNone(find_unpaywall_pdf_url("10.1/x"))
+
+    def test_unpaywall_no_email(self):
+        from pdf_attach import find_unpaywall_pdf_url
+        with patch("pdf_attach.UNPAYWALL_EMAIL", ""):
+            self.assertIsNone(find_unpaywall_pdf_url("10.1/x"))
+
+    @patch("pdf_attach.find_unpaywall_pdf_url")
+    @patch("pdf_attach.find_arxiv_pdf_url")
+    def test_resolve_prefers_arxiv(self, mock_arxiv, mock_uw):
+        from pdf_attach import resolve_pdf_url
+        mock_arxiv.return_value = "https://arxiv.org/pdf/1234.pdf"
+        mock_uw.return_value = "https://unpaywall.org/paper.pdf"
+        self.assertEqual(resolve_pdf_url("10.48550/arXiv.1234"), "https://arxiv.org/pdf/1234.pdf")
+        mock_uw.assert_not_called()
 
 
 class TestBibtexTypeMap(unittest.TestCase):
