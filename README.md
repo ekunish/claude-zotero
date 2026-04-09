@@ -8,6 +8,7 @@ Claude Code plugin for Zotero integration. Search, import, and manage academic r
 - **Import by DOI** — resolve DOIs to BibTeX and import into Zotero
 - **Import BibTeX/RIS** — direct file import
 - **Export citations** — export as BibTeX, RIS, or CSL JSON
+- **Auto PDF attachment** — fetch open-access PDFs via Unpaywall on import
 - **Dual API support** — local Zotero API (no auth) + REST API (cloud)
 
 ## Installation
@@ -52,9 +53,11 @@ Once installed, Claude Code will automatically detect Zotero-related requests:
 - `curl` — for DOI resolution and local Zotero connector
 - Python 3.12+ (managed by `uv`)
 
-### Optional (for abstract translation)
+### Optional
 
-- `ANTHROPIC_API_KEY` — for translating abstracts to Japanese via Claude API
+- `UNPAYWALL_EMAIL` — your email address for Unpaywall API (enables automatic open-access PDF attachment on DOI import)
+- `ANTHROPIC_API_KEY` — for translating abstracts via Claude API
+- `ZOTERO_TRANSLATE_LANG` — translation target language (default: Japanese)
 
 ## License
 

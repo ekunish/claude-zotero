@@ -109,6 +109,89 @@ def api_post_items(items: list[dict]) -> bool:
     return True
 
 
+def api_post_raw(path: str, data: bytes, headers: dict) -> ApiResult:
+    """POST raw bytes to Zotero REST API (for file upload auth, etc.)."""
+    user_id, api_key = _get_credentials()
+    url = f"https://api.zotero.org/users/{user_id}/{path.lstrip('/')}"
+    return _request("POST", url, api_key, data=data, headers=headers)
+
+
+def upload_file_to_item(item_key: str, filepath: str, filename: str, content_type: str) -> bool:
+    """Upload a file to a Zotero attachment item. Returns True on success.
+
+    Steps: 1) get upload auth  2) upload to S3  3) register upload.
+    """
+    import hashlib
+    user_id, api_key = _get_credentials()
+
+    with open(filepath, "rb") as f:
+        file_data = f.read()
+
+    md5 = hashlib.md5(file_data).hexdigest()
+    filesize = len(file_data)
+    mtime = int(os.path.getmtime(filepath) * 1000)
+
+    # Step 1: Get upload authorization
+    auth_body = urllib.parse.urlencode({
+        "md5": md5, "filename": filename,
+        "filesize": filesize, "mtime": mtime,
+    }).encode()
+    base_url = f"https://api.zotero.org/users/{user_id}/items/{item_key}/file"
+    auth_result = _request(
+        "POST", base_url, api_key,
+        data=auth_body,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "If-None-Match": "*",
+        },
+    )
+    if is_error(auth_result) or auth_result is None:
+        print(f"File upload auth failed: {auth_result}", file=sys.stderr)
+        return False
+
+    if isinstance(auth_result, dict) and auth_result.get("exists") == 1:
+        print("  File already exists in Zotero", file=sys.stderr)
+        return True
+
+    # Step 2: Upload to the provided URL
+    upload_url = auth_result["url"]
+    prefix = auth_result["prefix"].encode()
+    suffix = auth_result["suffix"].encode()
+    upload_content_type = auth_result["contentType"]
+    upload_key = auth_result["uploadKey"]
+
+    upload_body = prefix + file_data + suffix
+    upload_req = urllib.request.Request(
+        upload_url, data=upload_body,
+        headers={"Content-Type": upload_content_type},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(upload_req, timeout=120) as resp:
+            if resp.status not in (200, 201):
+                print(f"File upload failed: HTTP {resp.status}", file=sys.stderr)
+                return False
+    except urllib.error.URLError as e:
+        print(f"File upload failed: {e}", file=sys.stderr)
+        return False
+
+    # Step 3: Register the upload
+    register_body = urllib.parse.urlencode({"upload": upload_key}).encode()
+    register_result = _request(
+        "POST", base_url, api_key,
+        data=register_body,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "If-None-Match": "*",
+        },
+    )
+    if is_error(register_result):
+        print(f"File upload registration failed: {register_result}", file=sys.stderr)
+        return False
+
+    return True
+
+
 _HTTP_USER_AGENT = "claude-zotero/0.1 (https://github.com/ekunish/claude-zotero)"
 
 

@@ -78,6 +78,8 @@ Options:
 - `--file path/to/dois.txt` — File with one DOI per line
 - `--bibtex path/to/refs.bib` — Import BibTeX file directly
 
+**Automatic PDF attachment (REST API path):** If `UNPAYWALL_EMAIL` is set, the script automatically queries [Unpaywall](https://unpaywall.org/) for open-access PDFs and attaches them to imported items. This only applies to the REST API path — the local Zotero connector handles PDF retrieval via Zotero's built-in settings.
+
 ### List collections
 ```bash
 curl -s "http://localhost:23119/api/users/0/collections?format=json" | \

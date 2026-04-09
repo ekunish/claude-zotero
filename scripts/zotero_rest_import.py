@@ -9,10 +9,11 @@ Usage:
     cat refs.bib | uv run --project . python3 zotero_rest_import.py
 """
 
+import os
 import re
 import sys
 
-from zotero_api import api_post_items
+from zotero_api import api_post, is_error
 
 BIBTEX_TYPE_MAP = {
     "article": "journalArticle",
@@ -131,6 +132,22 @@ def bibtex_to_zotero_item(fields: dict) -> dict:
     return {k: v for k, v in item.items() if v or k == "creators"}
 
 
+def _post_items(items: list[dict]) -> dict[str, str]:
+    """POST items to Zotero. Returns {index: item_key} for successfully created items."""
+    created = {}
+    for i in range(0, len(items), 50):
+        batch = items[i : i + 50]
+        result = api_post("/items", batch)
+        if is_error(result) or not isinstance(result, dict):
+            print(f"API error: {result}", file=sys.stderr)
+            continue
+        for idx, item_data in result.get("successful", {}).items():
+            created[str(i + int(idx))] = item_data.get("key", item_data.get("data", {}).get("key", ""))
+        for idx, err in result.get("failed", {}).items():
+            print(f"  Failed item {idx}: {err.get('message', err)}", file=sys.stderr)
+    return created
+
+
 def main():
     bibtex = sys.stdin.read().strip()
     if not bibtex:
@@ -153,12 +170,22 @@ def main():
         print("Error: could not parse any items from BibTeX", file=sys.stderr)
         sys.exit(1)
 
-    if api_post_items(items):
-        for item in items:
-            doi = item.get("DOI", "N/A")
-            print(f"Imported: {item['title'][:60]} (DOI: {doi})")
-    else:
+    created = _post_items(items)
+    if not created:
         sys.exit(1)
+
+    for idx, item_key in created.items():
+        item = items[int(idx)]
+        doi = item.get("DOI", "N/A")
+        print(f"Imported: {item['title'][:60]} (DOI: {doi})")
+
+    # Attempt PDF attachment if UNPAYWALL_EMAIL is set
+    if os.environ.get("UNPAYWALL_EMAIL"):
+        from pdf_attach import attach_pdf
+        for idx, item_key in created.items():
+            doi = items[int(idx)].get("DOI", "")
+            if doi:
+                attach_pdf(item_key, doi)
 
 
 if __name__ == "__main__":
