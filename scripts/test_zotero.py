@@ -438,6 +438,67 @@ class TestHttpGetJson(unittest.TestCase):
             self.assertIsNone(http_get_json("http://test"))
 
 
+class TestArxivEnrichment(unittest.TestCase):
+
+    def test_extract_arxiv_id_from_doi(self):
+        from zotero_rest_import import _extract_arxiv_id
+        self.assertEqual(
+            _extract_arxiv_id({"DOI": "10.48550/arXiv.1706.03762"}),
+            "1706.03762",
+        )
+
+    def test_extract_arxiv_id_from_url(self):
+        from zotero_rest_import import _extract_arxiv_id
+        self.assertEqual(
+            _extract_arxiv_id({"url": "https://arxiv.org/abs/1706.03762"}),
+            "1706.03762",
+        )
+
+    def test_extract_arxiv_id_none(self):
+        from zotero_rest_import import _extract_arxiv_id
+        self.assertIsNone(_extract_arxiv_id({"DOI": "10.1038/nature14539"}))
+        self.assertIsNone(_extract_arxiv_id({}))
+
+    def test_fetch_arxiv_abstract(self):
+        from zotero_rest_import import fetch_arxiv_abstract
+        xml_resp = b"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Test Paper</title>
+    <summary>  This is a
+    multi-line
+    abstract.  </summary>
+  </entry>
+</feed>"""
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = xml_resp
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = fetch_arxiv_abstract("1706.03762")
+            self.assertEqual(result, "This is a multi-line abstract.")
+
+    def test_fetch_arxiv_abstract_error(self):
+        from zotero_rest_import import fetch_arxiv_abstract
+        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("fail")):
+            self.assertIsNone(fetch_arxiv_abstract("1706.03762"))
+
+    @patch("zotero_rest_import.fetch_arxiv_abstract")
+    def test_enrich_fills_missing_abstract(self, mock_fetch):
+        from zotero_rest_import import enrich_arxiv_abstracts
+        mock_fetch.return_value = "fetched abstract"
+        items = [
+            {"title": "arXiv paper", "DOI": "10.48550/arXiv.1706.03762", "abstractNote": ""},
+            {"title": "non-arxiv", "DOI": "10.1038/nature14539", "abstractNote": ""},
+            {"title": "already has", "DOI": "10.48550/arXiv.1234.5678", "abstractNote": "existing"},
+        ]
+        enrich_arxiv_abstracts(items)
+        self.assertEqual(items[0]["abstractNote"], "fetched abstract")
+        self.assertEqual(items[1]["abstractNote"], "")  # not arxiv, unchanged
+        self.assertEqual(items[2]["abstractNote"], "existing")  # already has, unchanged
+        mock_fetch.assert_called_once_with("1706.03762")
+
+
 class TestPdfResolve(unittest.TestCase):
 
     def test_arxiv_doi(self):

@@ -12,8 +12,12 @@ Usage:
 import os
 import re
 import sys
+import time
+import urllib.error
+import urllib.request
+import xml.etree.ElementTree as ET
 
-from zotero_api import api_post, is_error
+from zotero_api import _HTTP_USER_AGENT, api_post, is_error
 
 BIBTEX_TYPE_MAP = {
     "article": "journalArticle",
@@ -132,6 +136,62 @@ def bibtex_to_zotero_item(fields: dict) -> dict:
     return {k: v for k, v in item.items() if v or k == "creators"}
 
 
+_ARXIV_NS = "{http://www.w3.org/2005/Atom}"
+
+
+def _extract_arxiv_id(item: dict) -> str | None:
+    """Extract arXiv ID from an item's DOI or URL. Returns None if not arXiv."""
+    doi = (item.get("DOI") or "").lower()
+    if doi.startswith("10.48550/arxiv."):
+        return item["DOI"][len("10.48550/arxiv."):]
+    url = item.get("url") or ""
+    m = re.search(r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5})", url, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return None
+
+
+def fetch_arxiv_abstract(arxiv_id: str) -> str | None:
+    """Fetch abstract from the arXiv API. Returns None on failure."""
+    url = f"https://export.arxiv.org/api/query?id_list={arxiv_id}"
+    req = urllib.request.Request(url, headers={"User-Agent": _HTTP_USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            xml_text = resp.read().decode()
+    except urllib.error.URLError as e:
+        print(f"arXiv API error for {arxiv_id}: {e}", file=sys.stderr)
+        return None
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as e:
+        print(f"arXiv XML parse error for {arxiv_id}: {e}", file=sys.stderr)
+        return None
+
+    entry = root.find(f"{_ARXIV_NS}entry")
+    if entry is None:
+        return None
+    summary = entry.find(f"{_ARXIV_NS}summary")
+    if summary is None or not summary.text:
+        return None
+    return re.sub(r"\s+", " ", summary.text).strip()
+
+
+def enrich_arxiv_abstracts(items: list[dict]) -> None:
+    """Fill in missing abstracts for arXiv items via the arXiv API (in place)."""
+    targets = [i for i in items if not i.get("abstractNote") and _extract_arxiv_id(i)]
+    if not targets:
+        return
+    print(f"Fetching abstracts for {len(targets)} arXiv paper(s)...", file=sys.stderr)
+    for idx, item in enumerate(targets):
+        if idx > 0:
+            time.sleep(3)  # arXiv courtesy pause
+        arxiv_id = _extract_arxiv_id(item)
+        abstract = fetch_arxiv_abstract(arxiv_id)
+        if abstract:
+            item["abstractNote"] = abstract
+
+
 def _post_items(items: list[dict]) -> dict[str, str]:
     """POST items to Zotero. Returns {index: item_key} for successfully created items."""
     created = {}
@@ -169,6 +229,9 @@ def main():
     if not items:
         print("Error: could not parse any items from BibTeX", file=sys.stderr)
         sys.exit(1)
+
+    # Enrich arXiv items with abstracts (doi.org BibTeX omits them for arXiv)
+    enrich_arxiv_abstracts(items)
 
     created = _post_items(items)
     if not created:
